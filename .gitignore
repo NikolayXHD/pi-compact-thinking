@@ -1,0 +1,4 @@
+/.task/
+/node_modules/
+__pycache__/
+/.rumdl_cache/

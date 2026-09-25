@@ -1,0 +1,24 @@
+{
+  "name": "pi-compact-thinking",
+  "version": "1.0.0",
+  "description": "Pi extension: keep the last K reasoning blocks raw and replace older thinking with compact digests",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "pi-coding-agent",
+    "thinking",
+    "reasoning",
+    "context"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*"
+  }
+}
