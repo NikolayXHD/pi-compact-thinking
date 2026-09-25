@@ -1,96 +1,93 @@
-# Сценарии проверки compact-thinking
+# Test scenarios
 
-Расширение держит рассуждения последних K действий сырыми, а более старые
-заменяет конспектом, который делает фоновая компактификация. Сырой текст
-остаётся в записи сообщения, конспект подставляется в контекст на лету — в
-`context` и в `session_before_compact`.
+The extension densifies old thinking blocks into digests while keeping the raw
+text in the session. Digests are substituted into the context on the fly: in
+`context` and in `session_before_compact`.
 
-Автоматический прогон — `node src/probe.mjs` из корня пакета: чистые
-правила отбора, приёмки, сборки замены и текста статуса. Всё, что живёт только
-в сессии, проверяется вручную через дочернюю сессию `pi` и её JSONL.
+The automated run is `node src/probe.mjs` from the package root: pure rules for
+candidate selection, acceptance, replacement assembly and status text.
+Everything that lives only in the session is checked manually through a child
+`pi` session and its JSONL.
 
-Фон запускается в окне выполнения инструментов (`tool_execution_start`) и
-перед успокоением (`agent_before_settle`); во время стриминга основной модели
-запросов нет.
+The background job starts in the tool window (`tool_execution_start`) and
+before settling (`agent_before_settle`); it never runs while the main model
+streams.
 
-## Конфиг
+## Config
 
-Файл `~/.pi/agent/compact-thinking.json`. Поля: `enabled`, `k`, `minTokens`,
-`acceptanceRatio`. Отсутствующий файл равен значениям по умолчанию, битое
-поле заменяется значением по умолчанию, о проблеме расширение предупреждает
-один раз за сессию.
+The file is `~/.pi/agent/compact-thinking.json`. Fields: `enabled`, `k`,
+`minTokens`, `acceptanceRatio`. A missing file equals the defaults; a broken
+field falls back to its default, and the extension warns once per session.
 
-## Отбор и замена
+## Selection and replacement
 
-Правила в probe.mjs. Сессионные следствия:
+Rules live in probe.mjs. Session consequences:
 
-- блоки короче `minTokens` не сжимаются;
-- `k` считает все thinking-блоки, включая redacted, поэтому сырая зона
-  сохраняет размер действий;
-- блок, чей видимый текст уже подменён чужим `context_edit`, не трогается;
-- замена меняет текст блоков одной записи и не трогает соседние блоки, текст
-  и tool calls;
-- конспект принимается только при нормальном stop reason, без tool calls и
-  не длиннее `acceptanceRatio` от исходного блока; ответ обязан содержать
-  `<digest>…</digest>`, текст вне тегов игнорируется, разметка вызова
-  инструмента внутри тегов отклоняется;
-- отказ по свойству блока (обрыв по длине, tool call, отсутствие или пустая
-  обёртка, разметка инструмента, выросший ответ) записывается и не
-  повторяется; отказ по сети или отмене оставляет блок в очереди, но не
-  больше трёх попыток за сессию.
+- blocks shorter than `minTokens` are left alone;
+- `k` counts all thinking blocks, including redacted ones, so the raw zone
+  keeps the width of that many actions;
+- a block whose visible text was replaced by a foreign `context_edit` is not
+  touched;
+- replacement changes the text of target blocks and leaves neighbouring blocks,
+  text and tool calls intact;
+- a digest is accepted only with a normal stop reason, without tool calls and
+  not longer than `acceptanceRatio` of the source block; the answer must
+  contain `<digest>…</digest>`, text outside the tags is ignored, tool-call
+  markup inside the tags is rejected;
+- a rejection caused by the block (length cut-off, tool call, missing or empty
+  wrapper, tool markup, grown answer) is recorded and never retried; a network
+  or cancellation rejection leaves the block in the queue, but not more than
+  three attempts per session.
 
-## Ручные сценарии сессии
+## Manual session scenarios
 
-Каждый сценарий — отдельный прогон в пустом каталоге, чтобы JSONL лежал в своём
-месте:
-`mkdir -p /tmp/compact-thinking-check && cd /tmp/compact-thinking-check && pi -p "..."`.
+Run each scenario in an empty directory so the JSONL lands in its own place:
+`mkdir -p /tmp/compact-thinking-check` and run `pi -p "..."` inside it.
 
-Статус. На старте в футере появляется `💭 -…k/…k +…k`: экономия, сумма
-сырых рассуждений и генерация фоновых вызовов. Во время фонового вызова
-после мозга крутится спиннер, выключенный режим показывает `💭 off`.
-`/compact-thinking` показывает подробный отчёт, `off`/`on` переключают.
-Суммы пересчитываются на каждой границе хода, поэтому в идущей сессии с
-рассуждениями второе число нулём быть не должно.
+Status. At start the footer shows `💭 -…k/…k +…k`: savings, raw reasoning sum
+and generation of the background calls. While the background call runs, a
+spinner follows the balloon; the disabled mode shows `💭 off`.
+`/compact-thinking` prints a detailed report, `off`/`on` toggle. Sums are
+recomputed at every turn boundary, so in a running session with reasoning the
+second number must not stay zero.
 
-Сжатие по ходу задачи. С `k = 0` и `minTokens` около 16 попросить агента
-выполнить несколько bash-команд по очереди. После второго ответа в JSONL
-сессии появляются записи `compact-thinking-applied`; записей `context_edit`
-расширение не создаёт вовсе; в записи assistant-сообщения остаётся исходный
-полный thinking.
+Compaction during a task. With `k = 0` and `minTokens` around 16 ask the agent
+to run several bash commands in a row. After the second answer the session
+JSONL contains `compact-thinking-applied` entries; the extension writes no
+`context_edit` entries at all; the assistant message entry keeps the full raw
+thinking.
 
-Подстановка доходит до провайдера. Временное расширение-логгер на
-`before_provider_request` пишет в файл длину и начало `reasoning_content` у
-assistant-сообщений; в логе сырой блок превращается в конспект и остаётся
-таким в последующих запросах.
+Substitution reaches the provider. A temporary logger extension on
+`before_provider_request` writes the length and the start of
+`reasoning_content` for assistant messages; in the log a raw block turns into a
+digest and stays that way in later requests.
 
-Компактификация видит конспекты. Временное расширение-логгер на
-`session_before_compact` пишет длины thinking-блоков из
-`preparation.messagesToSummarize`; там должны быть конспекты, а не сырьё.
+The summarizer sees digests. A temporary logger extension on
+`session_before_compact` writes thinking block lengths from
+`preparation.messagesToSummarize`; those must be digests, not raw text.
 
-Смена контекста. После применения конспекта следующая сессия показывает в
-`/compact-thinking` ненулевые конспекты и экономию, а сырой текст остаётся в
-записи сообщения.
+Context change. After a digest is applied, `/compact-thinking` shows non-zero
+digests and savings, while the raw text stays in the message entry.
 
-Переход по дереву. Сделать несколько ходов, затем `/tree` на более раннюю
-запись. Состояние пересобирается по новой ветке: статус считает только её
-записи, а конспекты с покинутой ветки в контекст не попадают.
+Tree navigation. Make several turns, then `/tree` to an earlier entry. The
+state is rebuilt for the new branch: the status counts only its entries, and
+digests from the abandoned branch do not enter the context.
 
-Чужая правка. Если видимый текст блока подменён чужим `context_edit`,
-расширение блок не трогает и `compact-thinking-applied` для него не
-появляется.
+Foreign edit. If a block's visible text was replaced by a foreign
+`context_edit`, the extension leaves it alone and no `compact-thinking-applied`
+entry appears for it.
 
-Возобновление. Прервать сессию и возобновить её. Конспекты восстанавливаются
-из записей `compact-thinking-applied` и снова подставляются в контекст; статус
-совпадает с числом активных записей.
+Resume. Interrupt a session and resume it. Digests are restored from
+`compact-thinking-applied` entries and substituted into the context again; the
+status matches the number of active entries.
 
-Выключение. С `/compact-thinking off` новые записи расширения не появляются,
-пока режим не включат снова.
+Disable. With `/compact-thinking off` no new extension entries appear until the
+mode is enabled again.
 
-Дамп конспектов. После нескольких сжатий `/compact-thinking dump` кладёт
-рядом с JSONL сессии `thinking-a` и `thinking-b`; заголовки блоков в обоих
-файлах совпадают, блоки идут в порядке сессии; в `thinking-b` — то, что
-видит модель.
+Dump. After several compactions `/compact-thinking dump` writes `thinking-a`
+and `thinking-b` next to the session JSONL; block headings match in both files,
+blocks follow session order, and `thinking-b` holds what the model sees.
 
-Провайдерская подпись. Для DeepSeek и vLLM в конспекте остаётся
-`thinkingSignature: "reasoning_content"`; для провайдера без reasoning-поля
-подпись снимается.
+Provider signature. For DeepSeek and vLLM the digest keeps
+`thinkingSignature: "reasoning_content"`; for a provider without a
+reasoning-field signature it is dropped.

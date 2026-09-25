@@ -1,178 +1,60 @@
-# compact-thinking — конспекты старых рассуждений
+# pi-compact-thinking
 
-Расширение держит рассуждения последних K действий сырыми, а более старые
-заменяет конспектом. Конспект делает фоновая компактификация той же моделью,
-что ведёт сессию. Полный текст блока остаётся в записи сообщения, конспект
-подставляется в контекст на лету.
+Pi extension that shrinks the thinking in the context.
 
-## Включение, выключение, настройки
+- in some tasks reasoning takes more than half of the context;
+- the extension compresses that part by 30–60%.
 
-- `/compact-thinking` без аргумента показывает состояние текстом;
-- `/compact-thinking on` включает режим;
-- `/compact-thinking off` выключает его;
-- `/compact-thinking dump` складывает рядом с файлом сессии `thinking-a` (сырые
-  блоки) и `thinking-b` (то, что видит модель); перед каждым блоком — заголовок
-  `## entryId:blockIndex timestamp`, одинаковый в обоих файлах, чтобы diff
-  выравнивался.
+Old thinking blocks are rewritten by a background call of the same model into
+short digests: decisions, rejected options, facts and open questions survive,
+repetition and filler do not. Recent blocks stay raw.
 
-Команду регистрирует `registerCommand`, аргумент разбирает `onCommand` в
-`index.ts`. При включении фон запускается сразу, если есть готовые к сжатию
-блоки.
+## What you see
 
-Настройки лежат в `config.json` рядом с точкой входа расширения
-(`~/.pi/agent/extensions/compact-thinking/config.json`). Текущие значения:
+Footer: `💭 -40k/120k +76k` — reasoning tokens saved, raw reasoning tokens in
+context, tokens spent by the background calls. Spinner while a rewrite runs,
+`💭 off` when disabled.
 
-| поле              | значение | смысл                               |
-| ----------------- | -------- | ----------------------------------- |
-| `enabled`         | `true`   | режим включён при старте сессии     |
-| `k`               | `5`      | последних действий с сырыми блоками |
-| `minTokens`       | `512`    | блоки короче не сжимаются           |
-| `acceptanceRatio` | `0.95`   | длиннее этой доли — не конспект     |
+- `/compact-thinking` — report;
+- `/compact-thinking on` / `off`;
+- `/compact-thinking dump` — raw and compacted blocks next to the session file,
+  with matching headings so a diff aligns.
 
-Файл читает `loadConfig`, поля разбирает `parseConfig`. Отсутствующий файл
-равен значениям по умолчанию из `DEFAULT_CONFIG`; битое поле заменяется
-значением по умолчанию, о проблеме расширение предупреждает один раз за
-сессию.
+## Install
 
-## Где подставляются конспекты
+```bash
+pi install git:github.com/NikolayXHD/pi-compact-thinking
+```
 
-Подстановка одна и та же в двух местах, одной функцией `substituteMessages`:
+Settings: `~/.pi/agent/compact-thinking.json`.
 
-- `context` — перед запросом основной модели;
-- `session_before_compact` — перед штатным сумматором pi: расширение правит
-  `preparation.messagesToSummarize` и `preparation.turnPrefixMessages` на
-  месте, а pi после хука отдаёт этот же объект своему `compact`.
+| field             | default | meaning                       |
+| ----------------- | ------- | ----------------------------- |
+| `enabled`         | `true`  | mode is on at session start   |
+| `k`               | `5`     | recent blocks that stay raw   |
+| `minTokens`       | `512`   | shorter blocks are left alone |
+| `acceptanceRatio` | `0.95`  | a longer digest is rejected   |
 
-То есть и модель, и компактификатор видят один и тот же контекст. В сессию
-правки не пишутся: `context_edit` расширение не создаёт, поэтому pi считает
-размер контекста и порог компактификации по реальному `usage` последнего
-ответа, без грубого пересчёта по символам.
+## How it works
 
-Цена решения: сжатие существует, пока расширение загружено. С выключенным
-расширением сессия разворачивается в сырой контекст.
+A digest is a separate call of the same model over the same session prefix, so
+the provider reads it from the warm cache: no tools, no reasoning, the answer
+wrapped in `<digest>…</digest>`.
 
-## Статусная строка
+Digests are substituted into the context by one function called in `context`
+(before the main model request) and in `session_before_compact` (before Pi's
+own summarizer). Nothing is written to the session, so Pi keeps deriving the
+context size and the compaction threshold from the real provider `usage`.
 
-Текст собирает `formatStatusText`, в футер его ставит `updateStatus` под
-ключом `compact-thinking`. Включённый режим без работы:
+The background job runs while the agent is busy with tools and right before the
+session settles; it never competes with the model stream.
 
-`💭 -40k/120k +76k`
+## Limits
 
-Во время фонового вызова место пробела после `💭` занимает вращающийся
-спиннер (`SPINNER_FRAMES`), выключенный режим показывает `💭 off`.
+- works while the extension is loaded, nothing is stored in the session;
+- every block costs a full prefix read: a warm cache matters;
+- does not replace Pi compaction, it shrinks thinking only.
 
-- `💭` — расширение;
-- пробел / спиннер — простой / идёт фоновый вызов;
-- `-40k` — сколько токенов рассуждений сэкономлено активными конспектами;
-- `120k` — сумма токенов сырых рассуждений в контексте;
-- `+76k` — сколько токенов сгенерировали фоновые вызовы.
+## Development
 
-Числа округляются до целых тысяч. Суммы пересчитываются на каждой границе
-хода и при старте фонового вызова. Подробный отчёт даёт команда
-`/compact-thinking` без аргумента.
-
-## Как работает сжатие
-
-Сжатие — отдельный вызов той же модели, что ведёт сессию
-(`registry.streamSimple` в `compact`). Сообщения запроса — текущая проекция
-сессии (`buildSessionProjection`); в конец добавлено user-сообщение с
-`COMPACTION_PROMPT` и цитатой целевого блока в `<thinking_block>`. Префикс
-совпадает с запросом основной сессии, поэтому провайдер читает его из кеша.
-
-Вызов идёт без инструментов (`toolChoice: "none"`) и без запрошенного
-reasoning: компактификатору не нужно думать, он должен вернуть готовый текст.
-Конспект — то, что внутри `<digest>…</digest>`, всё вне тегов не читается.
-
-Фон запускается в двух окнах:
-
-- `tool_execution_start` — агент занят инструментами, модель не стримит;
-- `agent_before_settle` — последний ответ уже получен, сессия ещё не
-  успокоилась.
-
-На `turn_end` фон не стартует: эта граница стоит вплотную к следующему стриму
-модели. Одновременно идёт одна задача; при `session_shutdown` незавершённая
-отменяется.
-
-## Правила отбора
-
-Точку отсечения считает `selectCandidates`: кандидаты — thinking-блоки левее
-последних K блоков. Счёт идёт по всем thinking-блокам ветки, включая
-redacted, поэтому сырая зона по ширине совпадает с K действиями.
-
-Блок пропускается, если:
-
-- он уже сжат (`appliedRecords`) или отклонён (`rejected`);
-- у него нет видимого текста (redacted) или текст пуст после обрезки
-  (`canReplay`);
-- для API `openai-completions` нет подписи-поля рассуждения: без неё
-  провайдер блок не переотправляет, и сжимать его незачем;
-- в нём меньше `minTokens` токенов (оценка как у pi: четыре символа на токен);
-- его видимый текст изменён чужим `context_edit` (`foreignChangedBlocks`).
-
-Кандидаты обрабатываются от старых к новым по одному.
-
-## Приёмка конспекта
-
-Ответ компактификатора проверяет `validateCompaction`:
-
-- stop reason должен быть `stop`;
-- в ответе не должно быть tool calls;
-- ответ обязан содержать `<digest>…</digest>`; берётся только текст внутри
-  тегов, всё вне их игнорируется, пустая обёртка и её отсутствие — отказ;
-- внутри тегов нет разметки вызова инструмента (`findToolProtocolMarker`):
-  провайдер возвращает такие попытки текстом, когда инструменты не объявлены,
-  и в конспект они попадать не должны;
-- оценка токенов не больше `acceptanceRatio` от исходного блока.
-
-Отказ по свойству блока (обрыв по длине, tool call, отсутствие или пустая
-обёртка, разметка инструмента, выросший ответ) записывается в
-`compact-thinking-rejected` и не повторяется. Отказ по сети или отмене
-(`error`, `aborted`) оставляет блок в очереди, но не больше трёх попыток за
-сессию (`MAX_ATTEMPTS`).
-
-## Что пишется в сессию
-
-- `compact-thinking-applied` — конспект и его метрики; из этих записей
-  собирается подстановка;
-- `compact-thinking-rejected` — конспект отклонён;
-- `context_edit` расширение не пишет вовсе.
-
-Записи расширения в контекст модели не попадают. Полный текст блока остаётся
-в записи assistant-сообщения: расширение её не переписывает.
-
-## Возобновление и переход по дереву
-
-Состояние ветки восстанавливает `rebuild`: читает записи
-`compact-thinking-applied` и `compact-thinking-rejected`, собирает карту
-подстановок и счётчики. Вызывается он на `session_start` и `session_tree` —
-переход по дереву не шлёт `session_start`, поэтому ветку пересобирает
-отдельный обработчик.
-
-- прерванная сессия: конспекты восстанавливаются из записей и снова
-  подставляются в контекст;
-- переход на другую ветку: счётчики и очередь считают только её записи.
-
-## Подписи thinking-блоков
-
-`buildReplacement` меняет у целевого блока только текст рассуждения; текст
-ответа и tool calls не трогаются. Подпись сохраняется, если она называет
-reasoning-поле провайдера (`reasoning_content`, `reasoning`, `reasoning_text`,
-список в `REASONING_SIGNATURES`). Иначе подпись снимается: она привязана к
-исходному тексту и после перезаписи невалидна.
-
-У Anthropic подпись не из этого списка, поэтому конспект уезжает в модель
-обычным текстом.
-
-## Ограничения
-
-- Каждый блок — отдельный вызов с полным префиксом сессии, поэтому сжатие
-  имеет смысл на горячем кеше.
-- Сжатие живёт только при загруженном расширении: в сессии оно не записано.
-- На локальной модели фон идёт в окне инструментов, но при быстром вводе
-  может наложиться на следующий запрос.
-- Режим не заменяет pi-компактификацию: он сжимает только thinking-блоки и не
-  сокращает остальной контекст.
-
-Сценарии проверки — `src/TESTING.md`, прямой прогон чистых правил —
-`node src/probe.mjs`, спецификация задачи —
-`.task/current/19_compact-thinking/`.
+`node src/probe.mjs` for pure rules, `src/TESTING.md` for session scenarios.
