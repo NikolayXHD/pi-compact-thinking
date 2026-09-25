@@ -17,8 +17,39 @@ context, tokens spent by the background calls. Spinner while a rewrite runs,
 
 - `/compact-thinking` — report;
 - `/compact-thinking on` / `off`;
-- `/compact-thinking dump` — raw and compacted blocks next to the session file,
-  with matching headings so a diff aligns.
+- `/compact-thinking dump` — raw and compacted blocks next to the session file.
+
+## Observability
+
+`/compact-thinking dump` writes two files next to the session JSONL:
+
+- `thinking-a` — the raw blocks as the model wrote them;
+- `thinking-b` — the same blocks as the model sees them, with digests in place.
+
+Every block is preceded by the same heading in both files
+(`## entryId:blockIndex timestamp`), so a diff aligns block by block. Only
+applied digests that are still in context are dumped.
+
+Unified diff:
+
+```bash
+diff -u thinking-a thinking-b
+```
+
+Side by side:
+
+```bash
+delta --side-by-side thinking-a thinking-b
+diff --side-by-side --width=180 thinking-a thinking-b
+vimdiff thinking-a thinking-b
+```
+
+`delta` is the readable default: side-by-side panes, syntax highlight, an
+aligned vertical line between the sides. `vimdiff` (or `meld`, `code --diff`)
+works when you want to edit or fold.
+
+The dump notification prints the directory it wrote to; the files sit next to
+the session JSONL under `~/.pi/agent/sessions/`.
 
 ## Install
 

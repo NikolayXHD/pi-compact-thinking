@@ -86,7 +86,8 @@ mode is enabled again.
 
 Dump. After several compactions `/compact-thinking dump` writes `thinking-a`
 and `thinking-b` next to the session JSONL; block headings match in both files,
-blocks follow session order, and `thinking-b` holds what the model sees.
+blocks follow session order, and `thinking-b` holds what the model sees. Diff
+recipes are in README, section Observability.
 
 Provider signature. For DeepSeek and vLLM the digest keeps
 `thinkingSignature: "reasoning_content"`; for a provider without a
