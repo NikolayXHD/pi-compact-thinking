@@ -1,18 +1,17 @@
 /**
- * compact-thinking — правила сжатия старых thinking-блоков.
+ * compact-thinking — pure rules for compacting old thinking blocks.
  *
- * Модуль чистый: ни файлов, ни событий pi. Всё, что зависит от runtime,
- * живёт в index.ts. Сценарии проверки — TESTING.md, прямой прогон —
- * probe.mjs.
+ * The module is pure: no files, no Pi events. Everything runtime-bound lives
+ * in index.ts. Test scenarios — TESTING.md, direct run — probe.mjs.
  */
 
 export interface Config {
 	enabled: boolean;
-	/** Сколько последних действий остаются с сырыми thinking-блоками. */
+	/** How many last actions keep raw thinking blocks. */
 	k: number;
-	/** Блоки короче этого числа токенов не сжимаются. */
+	/** Blocks shorter than this are not compacted. */
 	minTokens: number;
-	/** Конспект длиннее этой доли исходного блока не принимается. */
+	/** A digest longer than this fraction of the source block is rejected. */
 	acceptanceRatio: number;
 }
 
@@ -54,7 +53,7 @@ export interface ToolCallBlock {
 
 export type ContentBlock = ThinkingBlock | TextBlock | ToolCallBlock | { type: string };
 
-/** Подписи, которыми провайдер помечает переотправляемое рассуждение. */
+/** Signatures with which a provider marks replayable reasoning. */
 const REASONING_SIGNATURES = new Set(["reasoning_content", "reasoning", "reasoning_text"]);
 
 export function isThinkingBlock(block: ContentBlock): block is ThinkingBlock {
@@ -66,9 +65,9 @@ export function keepsSignature(signature: unknown): boolean {
 }
 
 /**
- * Переотправляет ли провайдер рассуждение такого блока в следующий запрос.
- * `openai-completions` шлёт рассуждение только при подписи-поле, без неё
- * блок молча теряется, и сжимать его незачем.
+ * Whether the provider replays this block's reasoning in the next request.
+ * `openai-completions` sends reasoning only with a field-name signature; without
+ * one the block is silently dropped, so there is nothing to compact.
  */
 export function canReplay(block: ThinkingBlock, api: string): boolean {
 	if (block.redacted || block.thinking.trim() === "") return false;
@@ -81,8 +80,9 @@ export function blockKey(entryId: string, blockIndex: number): string {
 }
 
 /**
- * Индексы thinking-блоков, чей видимый текст изменён чужим `context_edit`: в
- * проекции наши конспекты не видны, поэтому любое расхождение — чужое.
+ * Indices of thinking blocks whose visible text was changed by a foreign
+ * `context_edit`: our digests are not visible in the projection, so any
+ * difference is foreign.
  */
 export function foreignChangedBlocks(
 	content: readonly ContentBlock[],
@@ -113,8 +113,8 @@ export interface Candidate {
 }
 
 /**
- * Кандидаты — thinking-блоки левее точки отсечения: последние K блоков
- * остаются сырыми, всё старше сжимается. Возвращаются в порядке появления.
+ * Candidates are thinking blocks left of the cut point: the last K blocks stay
+ * raw, everything older is compacted. Returned in order of appearance.
  */
 export function selectCandidates(
 	assistants: readonly VisibleAssistant[],
@@ -143,9 +143,10 @@ export function selectCandidates(
 }
 
 /**
- * Замена 1 к 1: у целевого блока меняется только текст рассуждения, текст,
- * tool calls и их подписи не трогаются. Подпись снимается, если она не
- * называет reasoning-поле: после перезаписи такая подпись невалидна.
+ * A one-to-one replacement: only the reasoning text of the target block
+ * changes; answer text, tool calls and their signatures are untouched. A
+ * signature that does not name a reasoning field is dropped: after a rewrite
+ * such a signature is invalid.
  */
 export function buildReplacement<T extends ContentBlock>(
 	content: readonly T[],
@@ -167,8 +168,8 @@ export interface AttemptResult {
 }
 
 /**
- * Разметка вызова инструмента, попавшая в текст: провайдер возвращает такие
- * попытки текстом, когда инструменты не объявлены.
+ * Tool-call markup that leaked into text: providers return such attempts as
+ * text when no tools are declared.
  */
 const TOOL_PROTOCOL_PATTERNS = [
 	/｜｜DSML/,
@@ -187,9 +188,9 @@ const DIGEST_OPEN = /<digest>/i;
 const DIGEST_CLOSE = /<\/digest>/i;
 
 /**
- * Конспект обязан быть обёрнут в `<digest>…</digest>`: граница результата
- * задаётся контрактом, а всё, что модель написала за тегами (преамбула,
- * продолжение транскрипта, вызов инструмента), в конспект не идёт.
+ * A digest must be wrapped in `<digest>…</digest>`: the contract defines the
+ * result boundary, and anything the model wrote outside the tags (preamble,
+ * transcript continuation, a tool call) never enters the digest.
  */
 export function extractDigest(text: string): string | undefined {
 	const open = DIGEST_OPEN.exec(text);
@@ -218,7 +219,7 @@ export function validateCompaction(
 		};
 	}
 	if (result.content.some((block) => block.type === "toolCall")) {
-		return { ok: false, reason: "ответ содержит tool call", terminal: true };
+		return { ok: false, reason: "the answer contains a tool call", terminal: true };
 	}
 	const text = result.content
 		.filter((block) => block.type === "text" && "text" in block && typeof block.text === "string")
@@ -227,20 +228,20 @@ export function validateCompaction(
 		.join("\n");
 	const digest = extractDigest(text);
 	if (digest === undefined) {
-		return { ok: false, reason: "нет обёртки <digest>…</digest>", terminal: true };
+		return { ok: false, reason: "no <digest>…</digest> wrapper", terminal: true };
 	}
 	if (digest === "") {
-		return { ok: false, reason: "пустой конспект", terminal: true };
+		return { ok: false, reason: "empty digest", terminal: true };
 	}
 	const marker = findToolProtocolMarker(digest);
 	if (marker) {
-		return { ok: false, reason: `в конспекте разметка вызова инструмента: ${marker}`, terminal: true };
+		return { ok: false, reason: `tool-call markup in the digest: ${marker}`, terminal: true };
 	}
 	const tokens = estimate(digest);
 	if (tokens > rawTokens * acceptanceRatio) {
 		return {
 			ok: false,
-			reason: `не короче: ${tokens} > ${Math.floor(rawTokens * acceptanceRatio)}`,
+			reason: `not shorter: ${tokens} > ${Math.floor(rawTokens * acceptanceRatio)}`,
 			terminal: true,
 		};
 	}
@@ -255,11 +256,11 @@ export function formatTokens(tokens: number): string {
 export interface StatusCounts {
 	enabled: boolean;
 	running: boolean;
-	/** Сумма токенов сырых рассуждений в контексте. */
+	/** Raw reasoning tokens in the context. */
 	rawThinkingTokens: number;
-	/** Сумма токенов рассуждений, которые сейчас видит модель. */
+	/** Reasoning tokens the model currently sees. */
 	contextThinkingTokens: number;
-	/** Сколько токенов сгенерировали фоновые вызовы. */
+	/** Tokens generated by the background calls. */
 	generatedTokens: number;
 }
 

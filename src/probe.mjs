@@ -1,4 +1,4 @@
-// Прямой прогон правил расширения через jiti: без сессии pi.
+// Direct run of the extension rules through jiti: no Pi session.
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -55,46 +55,46 @@ const candidateKeys = (candidates) => candidates.map((candidate) => blockKey(can
 const windowConfig = (k, minTokens) => ({ k, minTokens });
 const attemptResult = (stopReason, content) => ({ stopReason, content });
 
-expectEqual("пустой конфиг даёт значения по умолчанию", parseConfig(undefined), DEFAULT_CONFIG);
+expectEqual("empty config gives defaults", parseConfig(undefined), DEFAULT_CONFIG);
 expectEqual(
-	"поля конфига читаются",
+	"config fields are read",
 	parseConfig({ enabled: false, k: 2, minTokens: 100, acceptanceRatio: 0.5 }),
 	{ enabled: false, k: 2, minTokens: 100, acceptanceRatio: 0.5 },
 );
 expectEqual(
-	"битые поля заменяются значениями по умолчанию",
+	"broken fields fall back to defaults",
 	parseConfig({ k: -3, minTokens: "x", acceptanceRatio: 2 }),
 	{ ...DEFAULT_CONFIG, k: 0 },
 );
-expectEqual("дробный k округляется вниз", parseConfig({ k: 2.9 }).k, 2);
-expectEqual("строка вместо enabled не включает выключение", parseConfig({ enabled: "false" }).enabled, true);
-expectEqual("доля приёмки ноль не принимается", parseConfig({ acceptanceRatio: 0 }).acceptanceRatio, DEFAULT_CONFIG.acceptanceRatio);
-expectEqual("доля приёмки единица допустима", parseConfig({ acceptanceRatio: 1 }).acceptanceRatio, 1);
+expectEqual("fractional k rounds down", parseConfig({ k: 2.9 }).k, 2);
+expectEqual("a string instead of enabled does not disable the mode", parseConfig({ enabled: "false" }).enabled, true);
+expectEqual("acceptance ratio zero is not accepted", parseConfig({ acceptanceRatio: 0 }).acceptanceRatio, DEFAULT_CONFIG.acceptanceRatio);
+expectEqual("acceptance ratio one is allowed", parseConfig({ acceptanceRatio: 1 }).acceptanceRatio, 1);
 
-expectTrue("reasoning_content — подпись рассуждения", keepsSignature("reasoning_content"));
-expectTrue("reasoning — подпись рассуждения", keepsSignature("reasoning"));
-expectTrue("reasoning_text — подпись рассуждения", keepsSignature("reasoning_text"));
-expectEqual("чужая подпись не reasoning-поле", keepsSignature("signed-by-server"), false);
-expectEqual("подпись undefined не reasoning-поле", keepsSignature(undefined), false);
+expectTrue("reasoning_content is a reasoning signature", keepsSignature("reasoning_content"));
+expectTrue("reasoning is a reasoning signature", keepsSignature("reasoning"));
+expectTrue("reasoning_text is a reasoning signature", keepsSignature("reasoning_text"));
+expectEqual("a foreign signature is not a reasoning field", keepsSignature("signed-by-server"), false);
+expectEqual("an undefined signature is not a reasoning field", keepsSignature(undefined), false);
 
 expectTrue(
-	"подписанный блок openai-completions переотправляется",
-	canReplay(thinkingBlock("мысль", { thinkingSignature: "reasoning_content" }), "openai-completions"),
+	"a signed openai-completions block is replayed",
+	canReplay(thinkingBlock("thought", { thinkingSignature: "reasoning_content" }), "openai-completions"),
 );
 expectEqual(
-	"подпись не reasoning-полем — блок теряется",
-	canReplay(thinkingBlock("мысль", { thinkingSignature: "sig" }), "openai-completions"),
+	"a signature that is not a reasoning field drops the block",
+	canReplay(thinkingBlock("thought", { thinkingSignature: "sig" }), "openai-completions"),
 	false,
 );
 expectEqual(
-	"redacted не переотправляется",
-	canReplay(thinkingBlock("мысль", { redacted: true, thinkingSignature: "reasoning_content" }), "openai-completions"),
+	"a redacted block is not replayed",
+	canReplay(thinkingBlock("thought", { redacted: true, thinkingSignature: "reasoning_content" }), "openai-completions"),
 	false,
 );
-expectEqual("redacted с чужой подписью не переотправляется", canReplay(thinkingBlock("мысль", { redacted: true, thinkingSignature: "sig" }), "openai-completions"), false);
-expectEqual("пустой текст не переотправляется", canReplay(thinkingBlock("   "), "anthropic-messages"), false);
-expectTrue("anthropic переотправляет блок без подписи", canReplay(thinkingBlock("мысль"), "anthropic-messages"));
-expectTrue("неизвестный API переотправляет блок", canReplay(thinkingBlock("мысль"), "google-generative-ai"));
+expectEqual("a redacted block with a foreign signature is not replayed", canReplay(thinkingBlock("thought", { redacted: true, thinkingSignature: "sig" }), "openai-completions"), false);
+expectEqual("an empty text is not replayed", canReplay(thinkingBlock("   "), "anthropic-messages"), false);
+expectTrue("anthropic replays a block without a signature", canReplay(thinkingBlock("thought"), "anthropic-messages"));
+expectTrue("an unknown API replays the block", canReplay(thinkingBlock("thought"), "google-generative-ai"));
 
 const longReasoning = repeatChar("a", 400);
 const shortReasoning = repeatChar("b", 40);
@@ -105,25 +105,25 @@ const assistants = [
 ];
 
 expectEqual(
-	"k держит последние блоки сырыми",
+	"k keeps the last blocks raw",
 	candidateKeys(selectCandidates(assistants, new Set(), windowConfig(2, 1), estimateText)),
 	["e1:0", "e2:0"],
 );
-expectEqual("k покрывает всю историю — кандидатов нет", candidateKeys(selectCandidates(assistants, new Set(), windowConfig(4, 1), estimateText)), []);
-expectEqual("сжатые блоки пропускаются", candidateKeys(selectCandidates(assistants, new Set(["e1:0"]), windowConfig(2, 1), estimateText)), ["e2:0"]);
-expectEqual("короткие блоки пропускаются", candidateKeys(selectCandidates(assistants, new Set(), windowConfig(2, 200), estimateText)), []);
+expectEqual("k covers the whole history: no candidates", candidateKeys(selectCandidates(assistants, new Set(), windowConfig(4, 1), estimateText)), []);
+expectEqual("compacted blocks are skipped", candidateKeys(selectCandidates(assistants, new Set(["e1:0"]), windowConfig(2, 1), estimateText)), ["e2:0"]);
+expectEqual("short blocks are skipped", candidateKeys(selectCandidates(assistants, new Set(), windowConfig(2, 200), estimateText)), []);
 expectEqual(
-	"кандидаты идут от старых к новым",
+	"candidates go from oldest to newest",
 	candidateKeys(selectCandidates(assistants, new Set(), windowConfig(1, 1), estimateText)),
 	["e1:0", "e2:0", "e2:2"],
 );
 expectEqual(
-	"текст блока обрезается по краям",
+	"block text is trimmed",
 	selectCandidates([{ entryId: "e", api: "anthropic-messages", content: [thinkingBlock(`  ${longReasoning}  `)] }], new Set(), windowConfig(0, 1), estimateText)[0].text,
 	longReasoning,
 );
 expectEqual(
-	"redacted в сырой зоне не сдвигает отбор",
+	"a redacted block in the raw zone does not shift selection",
 	candidateKeys(selectCandidates([
 		{ entryId: "e1", api: "anthropic-messages", content: [thinkingBlock(longReasoning)] },
 		{ entryId: "e2", api: "anthropic-messages", content: [thinkingBlock(longReasoning, { redacted: true })] },
@@ -131,156 +131,156 @@ expectEqual(
 	["e1:0"],
 );
 expectEqual(
-	"openai-completions без reasoning-подписи не сжимается",
+	"openai-completions without a reasoning signature is not compacted",
 	candidateKeys(selectCandidates([
 		{ entryId: "e1", api: "openai-completions", content: [thinkingBlock(longReasoning, { thinkingSignature: "sig" })] },
 		{ entryId: "e2", api: "openai-completions", content: [thinkingBlock(longReasoning, { thinkingSignature: "reasoning_content" })] },
 	], new Set(), windowConfig(0, 1), estimateText)),
 	["e2:0"],
 );
-expectEqual("пустая история — кандидатов нет", candidateKeys(selectCandidates([], new Set(), windowConfig(0, 1), estimateText)), []);
+expectEqual("empty history: no candidates", candidateKeys(selectCandidates([], new Set(), windowConfig(0, 1), estimateText)), []);
 expectEqual(
-	"k = 0 сжимает все блоки",
+	"k = 0 compacts every block",
 	candidateKeys(selectCandidates(assistants, new Set(), windowConfig(0, 1), estimateText)),
 	["e1:0", "e2:0", "e2:2", "e3:0"],
 );
 
-const signatureBlock = thinkingBlock("старое", { thinkingSignature: "reasoning_content", redacted: false });
-const responseBlock = textBlock("ответ");
+const signatureBlock = thinkingBlock("old text", { thinkingSignature: "reasoning_content", redacted: false });
+const responseBlock = textBlock("answer");
 const toolBlock = { type: "toolCall", id: "c1", name: "read", arguments: { path: "a" } };
-const replaced = buildReplacement([signatureBlock, responseBlock, toolBlock], 0, "новое", true);
-expectEqual("замена меняет только целевой блок", replaced[0].thinking, "новое");
-expectEqual("подпись reasoning-поля сохраняется", replaced[0].thinkingSignature, "reasoning_content");
-expectEqual("текст не тронут", replaced[1], responseBlock);
-expectEqual("tool call не тронут", replaced[2], toolBlock);
-expectEqual("чужая подпись снимается", buildReplacement([thinkingBlock("старое", { thinkingSignature: "sig" })], 0, "новое", false)[0].thinkingSignature, undefined);
-expectEqual("подпись снята, текст заменён", buildReplacement([thinkingBlock("старое", { thinkingSignature: "sig" })], 0, "новое", false)[0].thinking, "новое");
-expectEqual("индекс вне диапазона ничего не меняет", buildReplacement([signatureBlock, responseBlock], 7, "новое", false), [signatureBlock, responseBlock]);
+const replaced = buildReplacement([signatureBlock, responseBlock, toolBlock], 0, "new text", true);
+expectEqual("replacement changes only the target block", replaced[0].thinking, "new text");
+expectEqual("a reasoning-field signature is kept", replaced[0].thinkingSignature, "reasoning_content");
+expectEqual("answer text is untouched", replaced[1], responseBlock);
+expectEqual("tool call is untouched", replaced[2], toolBlock);
+expectEqual("a foreign signature is dropped", buildReplacement([thinkingBlock("old text", { thinkingSignature: "sig" })], 0, "new text", false)[0].thinkingSignature, undefined);
+expectEqual("the signature is dropped and the text replaced", buildReplacement([thinkingBlock("old text", { thinkingSignature: "sig" })], 0, "new text", false)[0].thinking, "new text");
+expectEqual("an out-of-range index changes nothing", buildReplacement([signatureBlock, responseBlock], 7, "new text", false), [signatureBlock, responseBlock]);
 
-const shownWithOwnEdit = [thinkingBlock("конспект", { thinkingSignature: "reasoning_content" }), thinkingBlock(longReasoning)];
+const shownWithOwnEdit = [thinkingBlock("digest", { thinkingSignature: "reasoning_content" }), thinkingBlock(longReasoning)];
 expectEqual(
-	"замена блока видна как расхождение с проекцией",
+	"a replaced block shows as a difference from the projection",
 	foreignChangedBlocks([signatureBlock, thinkingBlock(longReasoning)], shownWithOwnEdit),
 	[0],
 );
 expectEqual(
-	"совпадающие блоки не считаются изменёнными",
+	"matching blocks are not reported as changed",
 	foreignChangedBlocks([signatureBlock, thinkingBlock(longReasoning)], [signatureBlock, thinkingBlock(longReasoning)]),
 	[],
 );
-expectEqual("пропавший видимый блок — чужая правка", foreignChangedBlocks([thinkingBlock(longReasoning)], undefined), [0]);
+expectEqual("a missing visible block is a foreign edit", foreignChangedBlocks([thinkingBlock(longReasoning)], undefined), [0]);
 expectEqual(
-	"видимый блок другого типа — чужая правка",
+	"a visible block of another type is a foreign edit",
 	foreignChangedBlocks([thinkingBlock(longReasoning)], [textBlock("x")]),
 	[0],
 );
 
 const lengthVerdict = validateCompaction(attemptResult("length", [textBlock(longReasoning)]), 100, 0.95, estimateText);
-expectEqual("обрыв по длине не принимается", lengthVerdict.ok, false);
-expectEqual("обрыв по длине — терминальный отказ", lengthVerdict.terminal, true);
+expectEqual("a length cut-off is not accepted", lengthVerdict.ok, false);
+expectEqual("a length cut-off is a terminal rejection", lengthVerdict.terminal, true);
 expectEqual(
-	"toolUse — терминальный отказ",
+	"toolUse is a terminal rejection",
 	validateCompaction(attemptResult("toolUse", [textBlock(longReasoning)]), 100, 0.95, estimateText).terminal,
 	true,
 );
 const abortedVerdict = validateCompaction(attemptResult("aborted", []), 100, 0.95, estimateText);
-expectEqual("обрыв запроса не принимается", abortedVerdict.ok, false);
-expectEqual("обрыв запроса не терминален", abortedVerdict.terminal, false);
+expectEqual("an aborted request is not accepted", abortedVerdict.ok, false);
+expectEqual("an aborted request is not terminal", abortedVerdict.terminal, false);
 const errorVerdict = validateCompaction(attemptResult("error", []), 100, 0.95, estimateText);
-expectEqual("ошибка провайдера не терминальна", errorVerdict.terminal, false);
-expectEqual("ответ с tool call не принимается", validateCompaction(attemptResult("stop", [textBlock(longReasoning), toolBlock]), 100, 0.95, estimateText).terminal, true);
-expectEqual("пустой ответ не принимается", validateCompaction(attemptResult("stop", [textBlock("  ")]), 100, 0.95, estimateText).ok, false);
-expectEqual("выросший ответ не принимается", validateCompaction(attemptResult("stop", [textBlock(`<digest>${repeatChar("x", 400)}</digest>`)]), 100, 0.95, estimateText).ok, false);
+expectEqual("a provider error is not terminal", errorVerdict.terminal, false);
+expectEqual("an answer with a tool call is not accepted", validateCompaction(attemptResult("stop", [textBlock(longReasoning), toolBlock]), 100, 0.95, estimateText).terminal, true);
+expectEqual("an empty answer is not accepted", validateCompaction(attemptResult("stop", [textBlock("  ")]), 100, 0.95, estimateText).ok, false);
+expectEqual("a grown answer is not accepted", validateCompaction(attemptResult("stop", [textBlock(`<digest>${repeatChar("x", 400)}</digest>`)]), 100, 0.95, estimateText).ok, false);
 expectEqual(
-	"сокращённый ответ принимается",
+	"a shortened answer is accepted",
 	validateCompaction(attemptResult("stop", [textBlock(`<digest>${repeatChar("x", 200)}</digest>`)]), 100, 0.95, estimateText),
 	{ ok: true, text: repeatChar("x", 200), tokens: 50 },
 );
 expectEqual(
-	"доля приёмки ноль отвергает любой текст",
-	validateCompaction(attemptResult("stop", [textBlock("коротко")]), 100, 0, estimateText).ok,
+	"acceptance ratio zero rejects any text",
+	validateCompaction(attemptResult("stop", [textBlock("short")]), 100, 0, estimateText).ok,
 	false,
 );
 expectEqual(
-	"ровно исходный размер на доле единица принимается",
+	"the exact source size is accepted at ratio one",
 	validateCompaction(attemptResult("stop", [textBlock(`<digest>${repeatChar("x", 400)}</digest>`)]), 100, 1, estimateText).tokens,
 	100,
 );
-expectEqual("digest извлекается из обёртки", extractDigest("преамбула <digest>\nконспект\n</digest> хвост"), "конспект");
-expectEqual("всё вне тегов игнорируется", extractDigest("мусор <digest>конспект</digest> мусор"), "конспект");
-expectEqual("без тегов конспекта нет", extractDigest("просто текст"), undefined);
-expectEqual("один тег не считается", extractDigest("<digest>конспект"), undefined);
-expectEqual("закрытый тег раньше открытого не считается", extractDigest("</digest><digest>конспект"), undefined);
+expectEqual("the digest is extracted from the wrapper", extractDigest("preamble <digest>\ndigest\n</digest> tail"), "digest");
+expectEqual("everything outside the tags is ignored", extractDigest("junk <digest>digest</digest> junk"), "digest");
+expectEqual("without tags there is no digest", extractDigest("plain text"), undefined);
+expectEqual("a single tag does not count", extractDigest("<digest>digest"), undefined);
+expectEqual("a closing tag before the opening one does not count", extractDigest("</digest><digest>digest"), undefined);
 expectEqual(
-	"текст конспекта склеивается и обрезается",
-	validateCompaction(attemptResult("stop", [textBlock("  <digest> "), textBlock("первая\nвторая"), textBlock(" </digest>  ")]), 1000, 0.95, estimateText).text,
-	"первая\nвторая",
+	"digest text is joined and trimmed",
+	validateCompaction(attemptResult("stop", [textBlock("  <digest> "), textBlock("first\nsecond"), textBlock(" </digest>  ")]), 1000, 0.95, estimateText).text,
+	"first\nsecond",
 );
 expectEqual(
-	"без обёртки ответ отклоняется",
+	"an answer without a wrapper is rejected",
 	validateCompaction(attemptResult("stop", [textBlock(longReasoning)]), 100, 0.95, estimateText).ok,
 	false,
 );
 expectEqual(
-	"без обёртки отказ терминален",
-	validateCompaction(attemptResult("stop", [textBlock("конспект")]), 100, 0.95, estimateText).terminal,
+	"a missing wrapper is a terminal rejection",
+	validateCompaction(attemptResult("stop", [textBlock("digest")]), 100, 0.95, estimateText).terminal,
 	true,
 );
 expectEqual(
-	"пустая обёртка отклоняется",
+	"an empty wrapper is rejected",
 	validateCompaction(attemptResult("stop", [textBlock("<digest>   </digest>")]), 100, 0.95, estimateText).ok,
 	false,
 );
-expectEqual("чистый текст разметки не содержит", findToolProtocolMarker("обычное рассуждение"), undefined);
+expectEqual("plain text has no markup", findToolProtocolMarker("plain reasoning"), undefined);
 expectTrue(
-	"DSML-разметка находится",
-	findToolProtocolMarker("вывод ｜｜DSML｜｜ calls>") !== undefined,
+	"DSML markup is found",
+	findToolProtocolMarker("output ｜｜DSML｜｜ calls>") !== undefined,
 );
-expectTrue("markdown-тег tool_calls находится", findToolProtocolMarker("<tool_calls>") !== undefined);
+expectTrue("the markdown tool_calls tag is found", findToolProtocolMarker("<tool_calls>") !== undefined);
 expectEqual(
-	"разметка внутри конспекта отклоняется",
+	"markup inside the digest is rejected",
 	validateCompaction(attemptResult("stop", [textBlock(`<digest>${longReasoning}\n<tool_calls></digest>`)]), 100, 0.95, estimateText).ok,
 	false,
 );
 expectEqual(
-	"разметка вне конспекта не мешает",
-	validateCompaction(attemptResult("stop", [textBlock("<tool_calls><digest>конспект</digest>")]), 100, 0.95, estimateText).ok,
+	"markup outside the digest does not interfere",
+	validateCompaction(attemptResult("stop", [textBlock("<tool_calls><digest>digest</digest>")]), 100, 0.95, estimateText).ok,
 	true,
 );
 expectEqual(
-	"отказ из-за разметки терминален",
+	"a markup rejection is terminal",
 	validateCompaction(attemptResult("stop", [textBlock("<digest><｜｜DSML｜｜ invoke></digest>")]), 100, 0.95, estimateText).terminal,
 	true,
 );
 
-expectEqual("токены до тысячи пишутся числом", formatTokens(999), "999");
-expectEqual("тысячи округляются до целых", formatTokens(1500), "2k");
-expectEqual("округление вниз", formatTokens(13400), "13k");
-expectEqual("округление вверх", formatTokens(13500), "14k");
-expectEqual("десятки тысяч", formatTokens(150000), "150k");
-expectEqual("пустой контекст", formatTokens(0), "0");
+expectEqual("below a thousand tokens are printed as is", formatTokens(999), "999");
+expectEqual("thousands are rounded to whole", formatTokens(1500), "2k");
+expectEqual("rounding down", formatTokens(13400), "13k");
+expectEqual("rounding up", formatTokens(13500), "14k");
+expectEqual("tens of thousands", formatTokens(150000), "150k");
+expectEqual("zero tokens", formatTokens(0), "0");
 expectEqual(
-	"выключенный режим виден",
+	"the disabled mode is visible",
 	formatStatusText({ enabled: false, running: false, rawThinkingTokens: 0, contextThinkingTokens: 0, generatedTokens: 0 }),
 	"💭 off",
 );
 expectEqual(
-	"статус показывает экономию, сырую сумму и генерацию",
+	"the status shows savings, raw sum and generation",
 	formatStatusText({ enabled: true, running: false, rawThinkingTokens: 120000, contextThinkingTokens: 80000, generatedTokens: 76000 }),
 	"💭 -40k/120k +76k",
 );
 expectEqual(
-	"во время работы пробел занимает кадр спиннера",
+	"a spinner frame takes the space while running",
 	formatStatusText({ enabled: true, running: true, rawThinkingTokens: 120000, contextThinkingTokens: 80000, generatedTokens: 76000 }, "⠹"),
 	"💭⠹-40k/120k +76k",
 );
 expectEqual(
-	"без сжатий экономия нулевая",
+	"without compaction savings are zero",
 	formatStatusText({ enabled: true, running: false, rawThinkingTokens: 5000, contextThinkingTokens: 5000, generatedTokens: 0 }),
 	"💭 0/5k +0",
 );
 expectEqual(
-	"пустой контекст",
+	"empty context",
 	formatStatusText({ enabled: true, running: false, rawThinkingTokens: 0, contextThinkingTokens: 0, generatedTokens: 0 }),
 	"💭 0/0 +0",
 );

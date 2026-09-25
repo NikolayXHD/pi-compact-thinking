@@ -1,22 +1,22 @@
 /**
- * compact-thinking — гибридный режим рассуждений.
+ * compact-thinking — densify old thinking blocks.
  *
- * Последние K действий модель видит с сырыми thinking-блоками, более старые —
- * со сжатыми. Конспект делает фоновая компактификация той же моделью по
- * горячему префиксу сессии.
+ * The model keeps raw thinking for its last K actions; older blocks reach it
+ * as short digests. A digest is made by a background call of the same model
+ * over the same session prefix, so the provider reads it from the warm cache.
  *
- * Конспекты подставляются в контекст на лету, одной функцией:
- * - в `context` перед запросом основной модели;
- * - в `session_before_compact`, где pi после хука отдаёт свой preparation
- *   штатному сумматору.
+ * Digests are substituted into the context on the fly by one function:
+ * - in `context`, before the main model request;
+ * - in `session_before_compact`, where Pi hands the same preparation object to
+ *   its own summarizer after the hook.
  *
- * В сессию правки не пишутся: сырой текст остаётся в записи сообщения, а
- * состояние живёт в записях расширения. Поэтому pi считает контекст и порог
- * компактификации по реальному `usage`, без грубого пересчёта.
+ * Nothing is written to the session: the raw text stays in the message entry,
+ * while the state lives in extension entries. Pi therefore derives the context
+ * size and the compaction threshold from the real `usage`, not from a rough
+ * character estimate.
  *
- * Документация задачи: `~/.pi/agent/.task/current/19_compact-thinking/`.
- * Описание расширения — README.md, сценарии проверки — TESTING.md, прямой
- * прогон чистых правил — probe.mjs.
+ * Task notes: `~/.pi/agent/.task/current/19_compact-thinking/`. Extension
+ * description — README.md, test scenarios — TESTING.md, pure rules — probe.mjs.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -54,16 +54,16 @@ type AgentMessage = ContextEvent["messages"][number];
 type AssistantContent = Extract<AgentMessage, { role: "assistant" }>["content"];
 
 const STATUS_KEY = "compact-thinking";
-/** Запись расширения: конспект подставлен в контекст. */
+/** Extension entry: the digest is substituted into the context. */
 const APPLIED_ENTRY = "compact-thinking-applied";
-/** Записи прежнего имени расширения: читаем, чтобы конспекты старых сессий не терялись. */
+/** Entries of the former extension name: read so old sessions keep their digests. */
 const LEGACY_APPLIED_ENTRIES = ["hybrid-thinking-applied"];
-/** Запись расширения: конспект отклонён, повтор не делается. */
+/** Extension entry: the digest was rejected and is not retried. */
 const REJECTED_ENTRY = "compact-thinking-rejected";
 const LEGACY_REJECTED_ENTRIES = ["hybrid-thinking-rejected"];
-/** Сколько нетерминальных отказов терпит один блок за сессию. */
+/** How many transient failures one block survives per session. */
 const MAX_ATTEMPTS = 3;
-/** Кадры спиннера статуса: пробел после мозга на время работы. */
+/** Status spinner frames: they take the place of the space while the job runs. */
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 100;
 
@@ -121,7 +121,7 @@ function asRejectedRecord(data: unknown): RejectedRecord | undefined {
 	return {
 		targetEntryId: data.targetEntryId,
 		blockIndex: Number(data.blockIndex),
-		reason: typeof data.reason === "string" ? data.reason : "отклонён",
+		reason: typeof data.reason === "string" ? data.reason : "rejected",
 		spentTokens: Number(data.spentTokens ?? 0),
 		spentOutput: Number(data.spentOutput ?? 0),
 	};
@@ -147,7 +147,7 @@ function buildRequestText(blockText: string): string {
 	return `${COMPACTION_PROMPT}\n\n<thinking_block>\n${blockText}\n</thinking_block>`;
 }
 
-/** Оценка как у pi: 4 символа на токен. */
+/** Estimated like Pi does: four characters per token. */
 const estimate = (text: string): number => Math.ceil(text.length / 4);
 
 class HybridThinking {
@@ -160,9 +160,9 @@ class HybridThinking {
 	private readonly attempts = new Map<string, number>();
 
 	/**
-	 * Фоновая задача не должна трогать `ctx`: он становится stale после
-	 * замены или перезагрузки сессии. Ссылки и значения снимаются, пока
-	 * обработчик события ещё активен.
+	 * The background job must not touch `ctx`: it goes stale after session
+	 * replacement or reload. References and values are captured while the event
+	 * handler is still active.
 	 */
 	private manager: ExtensionContext["sessionManager"] | undefined;
 	private registry: ExtensionContext["modelRegistry"] | undefined;
@@ -171,7 +171,7 @@ class HybridThinking {
 	private runPrompt = "";
 	private systemOptions: { forceSystemPrompt?: string } | undefined;
 
-	/** Контекст с подставленными конспектами, по времени assistant-сообщения. */
+	/** Context with digests substituted, keyed by assistant message time. */
 	private substitutions = new Map<number, AssistantContent>();
 
 	private enabled: boolean;
@@ -204,7 +204,7 @@ class HybridThinking {
 		pi.on("agent_before_settle", (_event, ctx) => this.onAgentBeforeSettle(ctx));
 		pi.on("session_shutdown", () => this.stop());
 		pi.registerCommand("compact-thinking", {
-			description: "Гибридный режим рассуждений: состояние, on, off, dump",
+			description: "Densify old thinking blocks: report, on, off, dump",
 			handler: async (args, ctx) => this.onCommand(args, ctx),
 		});
 	}
@@ -219,25 +219,25 @@ class HybridThinking {
 		this.updateStatus();
 	}
 
-	/** Переход по дереву не шлёт `session_start`: состояние ветки пересобирается. */
+	/** Tree navigation does not emit `session_start`: the branch state is rebuilt. */
 	private onTree(ctx: ExtensionContext): void {
 		this.capture(ctx);
 		this.rebuild();
 		this.updateStatus();
 	}
 
-	/** Форсированный промпт (его ставит, например, roles) pi схлопывает в голову. */
+	/** Pi collapses a forced prompt (set by extensions like roles) into one head. */
 	private onBeforeAgentStart(event: BeforeAgentStartEvent): void {
 		this.systemOptions = event.systemPromptOptions;
 	}
 
-	/** Контекст перед запросом модели: конспекты встают на место сырых блоков. */
+	/** Context before the model request: digests take the place of raw blocks. */
 	private onContext(event: ContextEvent): ContextEventResult | undefined {
 		const messages = this.substituteMessages(event.messages);
 		return messages ? { messages } : undefined;
 	}
 
-	/** Тот же контекст для штатного сумматора pi: preparation правится на месте. */
+	/** The same context for Pi's summarizer: the preparation is edited in place. */
 	private onBeforeCompact(event: SessionBeforeCompactEvent): void {
 		const summarized = this.substituteMessages(event.preparation.messagesToSummarize);
 		if (summarized) event.preparation.messagesToSummarize = summarized;
@@ -245,7 +245,7 @@ class HybridThinking {
 		if (prefix) event.preparation.turnPrefixMessages = prefix;
 	}
 
-	/** Окно, когда агент занят инструментами: фон не спорит со стримингом модели. */
+	/** The tool window: the background job does not compete with the model stream. */
 	private onToolExecutionStart(ctx: ExtensionContext): void {
 		this.capture(ctx);
 		this.refreshThinkingTokens();
@@ -271,7 +271,7 @@ class HybridThinking {
 		if (command === "on" || command === "off") {
 			this.enabled = command === "on";
 			this.updateStatus();
-			this.notify(`compact-thinking: ${this.enabled ? "включён" : "выключен"}`, "info");
+			this.notify(`compact-thinking: ${this.enabled ? "on" : "off"}`, "info");
 			if (this.enabled) setTimeout(() => void this.pump(), 0);
 			return;
 		}
@@ -291,7 +291,7 @@ class HybridThinking {
 		this.runPrompt = ctx.getSystemPrompt();
 	}
 
-	/** Восстановить состояние ветки после перезапуска, возобновления и перехода. */
+	/** Restore the branch state after restart, resume and navigation. */
 	private rebuild(): void {
 		const manager = this.manager;
 		if (!manager) return;
@@ -319,8 +319,8 @@ class HybridThinking {
 	}
 
 	/**
-	 * Собрать контекст с конспектами: для каждой подстановки — содержимое
-	 * записи с заменёнными блоками; счётчики считаются по активным конспектам.
+	 * Build the substituted context: for every target entry, its content with the
+	 * replaced blocks. Counters take only active digests into account.
 	 */
 	private rebuildSubstitutions(): void {
 		const manager = this.manager;
@@ -363,7 +363,7 @@ class HybridThinking {
 		this.rawThinkingTokens = this.measureRawThinking(projection);
 	}
 
-	/** Подставить конспекты в сообщения; undefined, если менять нечего. */
+	/** Substitute digests into the messages; undefined when there is nothing to change. */
 	private substituteMessages(messages: readonly AgentMessage[]): AgentMessage[] | undefined {
 		if (this.substitutions.size === 0) return undefined;
 		let changed = false;
@@ -378,8 +378,8 @@ class HybridThinking {
 	}
 
 	/**
-	 * Самый старый несжатый блок левее точки отсечения. Блоки, чей видимый
-	 * текст изменён чужим `context_edit`, не трогаем.
+	 * The oldest uncompacted block left of the cut point. A block whose visible
+	 * text was changed by a foreign `context_edit` is left alone.
 	 */
 	private pickCandidate(): Candidate | undefined {
 		const manager = this.manager;
@@ -406,9 +406,8 @@ class HybridThinking {
 	}
 
 	/**
-	 * Вызов компактификации по тому же префиксу, что у основной сессии.
-	 * При форсированном system prompt pi схлопывает системные сообщения в
-	 * одну голову — повторяем это.
+	 * The compaction call uses the same prefix as the main session. With a forced
+	 * system prompt Pi collapses system messages into one head — mirrored here.
 	 */
 	private async compact(candidate: Candidate): Promise<void> {
 		const manager = this.manager;
@@ -448,7 +447,7 @@ class HybridThinking {
 			});
 			const iterator = stream[Symbol.asyncIterator]();
 			while (!(await iterator.next()).done) {
-				// Опустошаем поток: очередь событий иначе растёт вместе с ответом.
+				// Drain the stream: its event queue otherwise grows with the answer.
 			}
 			const message = await stream.result();
 			if (generation !== this.generation || controller.signal.aborted) return;
@@ -499,7 +498,7 @@ class HybridThinking {
 		}
 	}
 
-	/** Одна фоновая задача: идём по кандидатам, пока они есть. */
+	/** One background job: walk the candidates while there are any. */
 	private async pump(): Promise<void> {
 		if (this.running || !this.enabled) return;
 		const generation = this.generation;
@@ -539,16 +538,15 @@ class HybridThinking {
 	}
 
 	/**
-	 * Рядом с файлом сессии: `thinking-a` — сырые блоки, `thinking-b` — то,
-	 * что видит модель после подстановки. Заголовки блоков совпадают, чтобы
-	 * diff выравнивался.
+	 * Next to the session file: `thinking-a` holds raw blocks, `thinking-b` what
+	 * the model sees after substitution. Block headings match so a diff aligns.
 	 */
 	private dump(): void {
 		const manager = this.manager;
 		if (!manager) return;
 		const sessionFile = manager.getSessionFile();
 		if (!sessionFile) {
-			this.notify("compact-thinking: сессия не сохраняется, складывать некуда", "warning");
+			this.notify("compact-thinking: the session is not persisted, nowhere to write", "warning");
 			return;
 		}
 		const raw: string[] = [];
@@ -570,14 +568,14 @@ class HybridThinking {
 		const dir = dirname(sessionFile);
 		writeFileSync(join(dir, "thinking-a"), `${raw.join("\n\n")}\n`);
 		writeFileSync(join(dir, "thinking-b"), `${substituted.join("\n\n")}\n`);
-		this.notify(`compact-thinking: ${raw.length} конспектов в ${dir}`, "info");
+		this.notify(`compact-thinking: ${raw.length} digests in ${dir}`, "info");
 	}
 
 	private persist(customType: string, data: unknown): void {
 		try {
 			this.pi.appendEntry(customType, data);
 		} catch {
-			// Сессия уже заменена или закрыта: запись некуда класть.
+			// The session is already replaced or closed: nowhere to put the entry.
 		}
 	}
 
@@ -595,18 +593,18 @@ class HybridThinking {
 		);
 	}
 
-	/** Подробный отчёт для `/compact-thinking` без аргумента. */
+	/** Detailed report for `/compact-thinking` without arguments. */
 	private reportText(): string {
 		return (
-			`compact-thinking: ${this.enabled ? "включён" : "выключен"} · ` +
-			`конспектов на ${this.substitutions.size} сообщениях · ` +
-			`сэкономлено ${formatTokens(this.savedThinkingTokens)} токенов · ` +
-			`сгенерировано ${formatTokens(this.spentOutput)} токенов · ` +
-			`прочитано префикса ${formatTokens(this.spentTokens)} токенов`
+			`compact-thinking: ${this.enabled ? "on" : "off"} · ` +
+			`digests in ${this.substitutions.size} messages · ` +
+			`saved ${formatTokens(this.savedThinkingTokens)} tokens · ` +
+			`generated ${formatTokens(this.spentOutput)} tokens · ` +
+			`read ${formatTokens(this.spentTokens)} prefix tokens`
 		);
 	}
 
-	/** Сырая сумма рассуждений в текущем контексте. */
+	/** Raw reasoning tokens in the current context. */
 	private measureRawThinking(projection: SessionProjection): number {
 		let raw = 0;
 		for (const projected of projection.entries) {
@@ -619,7 +617,7 @@ class HybridThinking {
 		return raw;
 	}
 
-	/** Пересчитать сырую сумму рассуждений по текущему контексту. */
+	/** Recompute the raw reasoning sum for the current context. */
 	private refreshThinkingTokens(): void {
 		const manager = this.manager;
 		if (!manager) return;
@@ -630,7 +628,7 @@ class HybridThinking {
 		try {
 			this.ui?.setStatus(STATUS_KEY, this.statusText());
 		} catch {
-			// Stale UI после замены сессии: строка больше не существует.
+			// Stale UI after a session replacement: the line no longer exists.
 		}
 	}
 
@@ -638,7 +636,7 @@ class HybridThinking {
 		try {
 			this.ui?.notify(message, level);
 		} catch {
-			// Stale UI после замены сессии.
+			// Stale UI after a session replacement.
 		}
 	}
 
